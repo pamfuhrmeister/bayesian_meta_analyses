@@ -1,0 +1,423 @@
+---
+title: "Extraction estimates from raw datasets"
+author: "Pam Fuhrmeister, Audrey Bürki"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+   
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(ggthemes)
+sessionInfo()  
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r options}
+# Uses the computer cores available
+options(mc.cores = parallel::detectCores())
+# The iterations can be reduced *only* for testing purposes:
+iter <- 4000
+chains <- 4
+```
+
+
+# Load dataset and select studies with short SOAs
+```{r load, echo=TRUE}
+all <- read.csv("all_raw_datasets20201007_slope_final.csv", sep=";") 
+all <- all %>%
+  select(-c(Target_Engl, Distractor_final, Distractor_Engl))
+
+SFB_Exp_2 <- read.csv("SFB_Exp2.csv")
+SFB_Exp_2 <- SFB_Exp_2 %>%
+  select(-X) %>%
+  mutate(Condition = ifelse(Condition == "sem.unr", "unr", "sem"))
+SFB_Exp_2$Participant <- as.factor(SFB_Exp_2$Participant)
+all$RT <- as.numeric(as.character(all$RT))
+all <- rbind(all, SFB_Exp_2)
+
+nb_studies<-length(unique(all$Study.ID))
+nb_studies
+
+data.short.SOA <- all[all$SOA < 161 & all$SOA > -161,]
+
+data.short.SOA <- droplevels(data.short.SOA)
+nb.studies.short.SOA<-length(unique(data.short.SOA$Study.ID))
+nb.studies.short.SOA
+
+data.short.SOA$ID <- group_indices(data.short.SOA, Study.ID)
+
+data.short.SOA <- data.short.SOA %>%
+  mutate(Participant_ID = paste(Study.ID, Participant, sep = "_"))
+
+flag <- c("Cutting.1999.3a.2_12", "Rodriguez.2014_Part02", "Rodriguez.2014_Part04", "Rodriguez.2014_Part10", "Rodriguez.2014_Part21", "Rodriguez.2014_Part22", "Rodriguez.2014_Part31", "Rodriguez.2014_Part54", "Rodriguez.2014_Part58")
+
+data.short.SOA <- data.short.SOA %>%
+  filter(!Participant_ID %in% flag)
+
+slope_df <- data.short.SOA %>%
+  select(Participant_ID, Condition, RT)
+
+data.short.SOA$item <- ifelse(is.na(data.short.SOA$Target_final), "unknown", data.short.SOA$Target_final)
+
+slope_df_item <- data.short.SOA %>%
+  select(item, Condition, RT)
+
+quantiles <- slope_df %>%
+  group_by(Participant_ID, Condition) %>%
+  mutate(quantile = cut(RT, breaks = quantile(RT, probs = seq(0,1,.2), type = 7),
+                        include.lowest = TRUE, labels = 1:5)) %>%
+  group_by(Participant_ID, Condition, quantile) %>%
+  summarize(mean_quantile = mean(RT)) 
+
+quantiles_item <- slope_df_item %>%
+  group_by(item, Condition) %>%
+  mutate(quantile = cut(RT, breaks = quantile(RT, probs = seq(0,1,.2), type = 7),
+                        include.lowest = TRUE, labels = 1:5)) %>%
+  group_by(item, Condition, quantile) %>%
+  summarize(mean_quantile = mean(RT)) 
+
+quantiles_wide <- quantiles %>%
+  pivot_wider(names_from = c(Condition, quantile), values_from = mean_quantile)
+
+quantiles_wide_item <- quantiles_item %>%
+  pivot_wider(names_from = c(Condition, quantile), values_from = mean_quantile)
+
+slope_2_1 <- quantiles_wide %>%
+  mutate(delta_2 = sem_2 - unr_2) %>%
+  mutate(delta_1 = sem_1 - unr_1) %>%
+  mutate(mean_2 = ((sem_2 + unr_2)/2)) %>%
+  mutate(mean_1 = ((sem_1 + unr_1)/2)) %>%
+  group_by(Participant_ID) %>%
+  summarize(slope_2_1 = (delta_2 - delta_1)/(mean_2 - mean_1))
+
+slope_2_1_item <- quantiles_wide_item %>%
+  mutate(delta_2 = sem_2 - unr_2) %>%
+  mutate(delta_1 = sem_1 - unr_1) %>%
+  mutate(mean_2 = ((sem_2 + unr_2)/2)) %>%
+  mutate(mean_1 = ((sem_1 + unr_1)/2)) %>%
+  group_by(item) %>%
+  summarize(slope_2_1_item = (delta_2 - delta_1)/(mean_2 - mean_1))
+
+# slope_3_2 <- quantiles_wide %>%
+#   mutate(delta_3 = sem_3 - unr_3) %>%
+#   mutate(delta_2 = sem_2 - unr_2) %>%
+#   mutate(mean_3 = ((sem_3 + unr_3)/2)) %>%
+#   mutate(mean_2 = ((sem_2 + unr_2)/2)) %>%
+#   group_by(Participant_ID) %>%
+#   summarize(slope_3_2 = (delta_3 - delta_2)/(mean_3 - mean_2))
+# 
+# slope_4_3 <- quantiles_wide %>%  
+#   mutate(delta_4 = sem_4 - unr_4) %>%
+#   mutate(delta_3 = sem_3 - unr_3) %>%
+#   mutate(mean_4 = ((sem_4 + unr_4)/2)) %>%
+#   mutate(mean_3 = ((sem_3 + unr_3)/2)) %>%
+#   group_by(Participant_ID) %>%
+#   summarize(slope_4_3 = (delta_4 - delta_3)/(mean_4 - mean_3))
+
+slope_5_4 <- quantiles_wide %>%  
+  mutate(delta_5 = sem_5 - unr_5) %>%
+  mutate(delta_4 = sem_4 - unr_4) %>%
+  mutate(mean_5 = ((sem_5 + unr_5)/2)) %>%
+  mutate(mean_4 = ((sem_4 + unr_4)/2)) %>%
+  group_by(Participant_ID) %>%
+  summarize(slope_5_4 = (delta_5 - delta_4)/(mean_5 - mean_4))
+
+slope_5_4_item <- quantiles_wide_item %>%  
+  mutate(delta_5 = sem_5 - unr_5) %>%
+  mutate(delta_4 = sem_4 - unr_4) %>%
+  mutate(mean_5 = ((sem_5 + unr_5)/2)) %>%
+  mutate(mean_4 = ((sem_4 + unr_4)/2)) %>%
+  group_by(item) %>%
+  summarize(slope_5_4_item = (delta_5 - delta_4)/(mean_5 - mean_4))
+
+data.short.SOA <- merge(data.short.SOA, slope_2_1, by = "Participant_ID")
+data.short.SOA <- merge(data.short.SOA, slope_5_4, by = "Participant_ID")
+data.short.SOA <- merge(data.short.SOA, slope_2_1_item, by = "item")
+data.short.SOA <- merge(data.short.SOA, slope_5_4_item, by = "item")
+
+# data.short.SOA <- data.short.SOA %>%
+#   group_by(Participant_ID) %>%  
+#   mutate(mean_first_3 = (mean(c(slope_2_1, slope_3_2, slope_4_3))))
+# 
+# data.short.SOA$dif_slopes <- data.short.SOA$slope_5_4 - data.short.SOA$mean_first_3
+# 
+
+data.short.SOA <- data.short.SOA %>%
+  group_by(Participant_ID, Condition) %>%
+  mutate(quantile = cut(RT, breaks = quantile(RT, probs = seq(0,1,.2), type = 7),
+                        include.lowest = TRUE, labels = 1:5)) %>%
+  group_by(item, Condition) %>%
+  mutate(quantile_item = cut(RT, breaks = quantile(RT, probs = seq(0,1,.2), type = 7),
+                        include.lowest = TRUE, labels = 1:5))
+
+# semantic interference effect by participant
+sem_int <- data.short.SOA %>%
+  group_by(Participant_ID, Condition) %>%
+  summarize(mean_cond = mean(RT)) %>%
+  pivot_wider(names_from = Condition, values_from = mean_cond) %>%
+  mutate(sem_int = sem - unr)
+
+sem_int_item <- data.short.SOA %>%
+  group_by(item, Condition) %>%
+  summarize(mean_cond = mean(RT)) %>%
+  pivot_wider(names_from = Condition, values_from = mean_cond) %>%
+  mutate(sem_int_item = sem - unr)
+
+mean_RT_total <- data.short.SOA %>%
+  group_by(Participant_ID) %>%
+  summarize(mean_total = mean(RT))
+
+mean_RT_total_item <- data.short.SOA %>%
+  group_by(item) %>%
+  summarize(mean_total_item = mean(RT))
+
+
+sem_int <- merge(sem_int, mean_RT_total, by = "Participant_ID")
+sem_int_item <- merge(sem_int_item, mean_RT_total_item, by = "item")
+
+data.short.SOA <- merge(data.short.SOA, sem_int, by = "Participant_ID")
+data.short.SOA <- merge(data.short.SOA, sem_int_item, by = "item")
+
+```
+
+# Create a dataframe in which to add extracted information 
+```{r create empty df, echo=TRUE, eval=F}
+data.extracted.raw.datasets<-data.frame(Index=1:nb.studies.short.SOA)
+data.extracted.raw.datasets$Experiment <-rep(NA,nb.studies.short.SOA) 
+
+data.extracted.raw.datasets$b3_int <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_int <- rep(NA,nb.studies.short.SOA)
+
+data.extracted.raw.datasets$b3_int_fastest <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_int_fastest <- rep(NA,nb.studies.short.SOA)
+
+data.extracted.raw.datasets$b3_int_item <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_int_item <- rep(NA,nb.studies.short.SOA)
+
+data.extracted.raw.datasets$b3_int_fastest_item <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_int_fastest_item <- rep(NA,nb.studies.short.SOA)
+
+data.extracted.raw.datasets$n.trials <-rep(NA,nb.studies.short.SOA) 
+data.extracted.raw.datasets$nb_participants <-rep(NA,nb.studies.short.SOA) 
+data.extracted.raw.datasets$cor_est_slowest<-rep(NA,nb.studies.short.SOA) 
+data.extracted.raw.datasets$cor_est_fastest<-rep(NA,nb.studies.short.SOA) 
+data.extracted.raw.datasets$cor_est_sem_mean<-rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$cor_est_slowest_item<-rep(NA,nb.studies.short.SOA) 
+data.extracted.raw.datasets$cor_est_fastest_item<-rep(NA,nb.studies.short.SOA) 
+data.extracted.raw.datasets$cor_est_sem_mean_item<-rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$mean_trials_p<-rep(NA,nb.studies.short.SOA) 
+data.extracted.raw.datasets$min_trials_p<-rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$num_items<-rep(NA,nb.studies.short.SOA)
+
+
+data.extracted.raw.datasets$quantile1 <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_quantile1 <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$quantile2 <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_quantile2 <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$quantile3 <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_quantile3 <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$quantile4 <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_quantile4 <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$quantile5 <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_quantile5 <- rep(NA,nb.studies.short.SOA)
+
+data.extracted.raw.datasets$int_quant_sem <- rep(NA,nb.studies.short.SOA)
+data.extracted.raw.datasets$SE_int_quant_sem <- rep(NA,nb.studies.short.SOA)
+
+
+VIF_slowest <- data.frame()
+
+VIF_fastest <- data.frame()
+
+VIF_slowest_item <- data.frame()
+
+VIF_fastest_item <- data.frame()
+
+```
+
+
+# Compute slope, run lmer model and extract estimates and Standard errors 
+```{r run models, echo=TRUE, warning=FALSE, message=FALSE, eval=F}
+
+data.short.SOA$Condition <-as.factor(as.character(data.short.SOA$Condition))
+data.short.SOA$Participant <-as.factor(as.character(data.short.SOA$Participant_ID))
+data.short.SOA$Study.ID <-as.factor(as.character(data.short.SOA$Study.ID))
+data.short.SOA$item <-as.factor(as.character(data.short.SOA$item))
+data.short.SOA$RT <-as.numeric(as.character(data.short.SOA$RT))
+data.short.SOA$quantile_num <- as.numeric(as.character(data.short.SOA$quantile))
+
+for(i in 1:nb.studies.short.SOA){ 
+
+    #select data
+    data <- data.short.SOA[data.short.SOA$ID == i,]
+    ind = i
+    experiment <- as.character(data$Study.ID[[1]])
+
+    
+    # Extract N and means
+    n.trials <- nrow(data)
+    nb_participants<-length(unique(data$Participant_ID))
+    #nb_targets<-length(unique(data$Target_final))
+    meanRT <- mean(data$RT)
+
+    #here add code to compute slope and add it to dataset
+    # Run model
+    ## Define contrasts and extract design matrix
+    contrasts(data$Condition) <- c(0.5,-0.5) 
+    m0 <- lmer(RT ~ (Condition) + (1|Participant_ID), data = data) 
+    mat_trt <- model.matrix(m0)
+    head(mat_trt)
+    data$cont.RelvsUnr <- mat_trt[,2] 
+    
+    # m00 <- lmer(RT ~ 1 + (1|Participant_ID) + (1|item), data = data) 
+    # mat_trt0 <- model.matrix(m00)
+    # data$cont.RelvsUnr_item <- mat_trt0[,2] 
+    
+    
+  m1 <- lmer(RT~ cont.RelvsUnr*slope_5_4+(1+cont.RelvsUnr*slope_5_4||Participant_ID) + (1+cont.RelvsUnr*slope_5_4||item), data = data)
+    VIF_slowest_list <- car::vif(m1)
+    VIF_slowest <- bind_rows(VIF_slowest, VIF_slowest_list)
+    VIF_slowest$Study.ID[ind] <- ind
+    
+    b_int <- round(fixef(m1)[4],2)
+    # # pvals_int<-round(summary(m1)$coefficients[4,5], 4)
+    SE_int <- round(summary(m1)$coefficients[4,2],2)
+    
+    mean.slope <- mean(data$slope_5_4, na.rm = TRUE)
+    
+    
+    
+  m2 <- lmer(RT~ cont.RelvsUnr*slope_2_1+(1+cont.RelvsUnr*slope_2_1||Participant_ID) + (1+cont.RelvsUnr*slope_2_1||item), data = data)
+    VIF_fastest_list <- car::vif(m2)
+    VIF_fastest <- bind_rows(VIF_fastest, VIF_fastest_list)
+    VIF_fastest$Study.ID[ind] <- ind
+  
+    b_int_fastest <- round(fixef(m2)[4],2)
+    # #pvals_int<-round(summary(m1)$coefficients[4,5], 4)
+    SE_int_fastest <- round(summary(m2)$coefficients[4,2],2)
+    
+    mean.slope_fastest <-mean(data$slope_2_1, na.rm = TRUE)
+    
+  m3 <- lmer(RT~ quantile/cont.RelvsUnr+(1+quantile/cont.RelvsUnr||Participant_ID) + (1+quantile/cont.RelvsUnr||item), data = data)
+
+      #store information
+    quantile1 <- round(fixef(m3)[6],2)
+    SE_quantile1 <- round(summary(m3)$coefficients[6,2],2)
+
+    quantile2 <- round(fixef(m3)[7],2)
+    SE_quantile2 <- round(summary(m3)$coefficients[7,2],2)
+
+    quantile3 <- round(fixef(m3)[8],2)
+    SE_quantile3 <- round(summary(m3)$coefficients[8,2],2)
+
+    quantile4 <- round(fixef(m3)[9],2)
+    SE_quantile4 <- round(summary(m3)$coefficients[9,2],2)
+
+    quantile5 <- round(fixef(m3)[10],2)
+    SE_quantile5 <- round(summary(m3)$coefficients[10,2],2)
+    
+
+  m4 <- lmer(RT~quantile_num*cont.RelvsUnr+(1+quantile_num*cont.RelvsUnr||Participant_ID) + (1+quantile_num*cont.RelvsUnr||item), data = data)
+    
+    int_quant_sem <- round(fixef(m4)[4],2)
+    SE_int_quant_sem <- round(summary(m4)$coefficients[4,2],2)
+    
+    
+    mean.slope_fastest <-mean(data$slope_2_1, na.rm = TRUE)
+    
+    cor_slowest <- cor.test(data$slope_5_4, data$sem_int)
+    cor_est_slowest <- cor_slowest$estimate
+    
+    cor_fastest <- cor.test(data$slope_2_1, data$sem_int)
+    cor_est_fastest <- cor_fastest$estimate
+    
+    correlation <- cor.test(data$mean_total, data$sem_int)
+    cor_est_sem_mean <- correlation$estimate
+    
+    cor_slowest_item <- cor.test(data$slope_5_4_item, data$sem_int_item)
+    cor_est_slowest_item <- cor_slowest_item$estimate
+    
+    cor_fastest_item <- cor.test(data$slope_2_1_item, data$sem_int_item)
+    cor_est_fastest_item <- cor_fastest_item$estimate
+    
+    correlation_item <- cor.test(data$mean_total_item, data$sem_int_item)
+    cor_est_sem_mean_item <- correlation_item$estimate
+    
+    trials <- data %>%
+      group_by(Participant_ID) %>%
+      summarize(num_trials = length(RT))
+    
+    num_items <- length(unique(data$item))
+    mean_trials_p <- round(mean(trials$num_trials),2)
+    min_trials_p <- min(trials$num_trials)
+
+    # add to file
+    
+data.extracted.raw.datasets$Experiment[ind] <- experiment
+data.extracted.raw.datasets$meanRT[ind] <- meanRT
+# data.extracted.raw.datasets$b0[ind] <- b0
+# data.extracted.raw.datasets$b1_sem[ind] <- b_sem
+# data.extracted.raw.datasets$SE_sem[ind] <-SE_sem
+# # data.extracted.raw.datasets$pval_sem[ind] <- pvals_sem
+# data.extracted.raw.datasets$b2_slope[ind] <- b_slope
+# data.extracted.raw.datasets$SE_slope[ind] <- SE_slope
+#data.extracted.raw.datasets$pval_sem[ind] <- pvals_sem
+data.extracted.raw.datasets$b3_int[ind] <- b_int
+data.extracted.raw.datasets$SE_int[ind] <- SE_int
+# data.extracted.raw.datasets$pval_int[ind] <- pvals_int
+data.extracted.raw.datasets$mean.slope[ind]<-mean.slope
+
+# data.extracted.raw.datasets$b0_fastest[ind] <- b0_fastest
+# data.extracted.raw.datasets$b1_sem_fastest[ind] <- b_sem_fastest
+# data.extracted.raw.datasets$SE_sem_fastest[ind] <-SE_sem_fastest
+# #data.extracted.raw.datasets$pval_sem[ind] <- pvals_sem
+# data.extracted.raw.datasets$b2_slope_fastest[ind] <- b_slope_fastest
+# data.extracted.raw.datasets$SE_slope_fastest[ind] <- SE_slope_fastest
+#data.extracted.raw.datasets$pval_sem[ind] <- pvals_sem
+data.extracted.raw.datasets$b3_int_fastest[ind] <- b_int_fastest
+data.extracted.raw.datasets$SE_int_fastest[ind] <- SE_int_fastest
+data.extracted.raw.datasets$mean.slope_fastest[ind]<-mean.slope_fastest
+
+data.extracted.raw.datasets$quantile1[ind] <- quantile1
+data.extracted.raw.datasets$SE_quantile1[ind] <- SE_quantile1
+data.extracted.raw.datasets$quantile2[ind] <- quantile2
+data.extracted.raw.datasets$SE_quantile2[ind] <- SE_quantile2
+data.extracted.raw.datasets$quantile3[ind] <- quantile3
+data.extracted.raw.datasets$SE_quantile3[ind] <- SE_quantile3
+data.extracted.raw.datasets$quantile4[ind] <- quantile4
+data.extracted.raw.datasets$SE_quantile4[ind] <- SE_quantile4
+data.extracted.raw.datasets$quantile5[ind] <- quantile5
+data.extracted.raw.datasets$SE_quantile5[ind] <- SE_quantile5
+
+data.extracted.raw.datasets$int_quant_sem[ind] <- int_quant_sem
+data.extracted.raw.datasets$SE_int_quant_sem[ind] <- SE_int_quant_sem
+
+data.extracted.raw.datasets$n.trials[ind] <- n.trials
+data.extracted.raw.datasets$nb_participants[ind] <- nb_participants
+# data.extracted.raw.datasets$cor_est[ind]<- cor_est
+data.extracted.raw.datasets$cor_est_slowest[ind] <- cor_est_slowest
+data.extracted.raw.datasets$cor_est_fastest[ind] <- cor_est_fastest
+data.extracted.raw.datasets$cor_est_sem_mean[ind] <- cor_est_sem_mean
+data.extracted.raw.datasets$cor_est_slowest_item[ind] <- cor_est_slowest_item
+data.extracted.raw.datasets$cor_est_fastest_item[ind] <- cor_est_fastest_item
+data.extracted.raw.datasets$cor_est_sem_mean_item[ind] <- cor_est_sem_mean_item
+# data.extracted.raw.datasets$cor_p[ind]<- cor_p
+data.extracted.raw.datasets$mean_trials_p[ind]<- mean_trials_p
+data.extracted.raw.datasets$min_trials_p[ind]<- min_trials_p
+data.extracted.raw.datasets$num_items[ind] <- num_items
+    print(i)
+    i = i+1
+}
+```
+
+# Save file
+```{r save, echo=TRUE, eval=F}
+write.csv(data.extracted.raw.datasets, file = "estimates.slope2.csv")
+```
+
+
