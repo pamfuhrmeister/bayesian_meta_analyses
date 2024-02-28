@@ -1,0 +1,1850 @@
+---
+title: "Bayesian meta-analyses"
+author: "Pam Fuhrmeister and Audrey Buerki"
+date: "09.10.2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(knitr)
+library(rstan)
+library(brms)
+library(yarrr)
+library(ggridges)
+library(tidybayes)
+library(stringr)
+library(purrr)
+library(GGally)
+library(bayesplot)
+library(broom)
+library(grid)
+library(gridExtra)
+library(effects)
+library(sjmisc)
+library(sjPlot)
+library(forestplot)
+library(xtable)
+library(corrplot)
+library(RColorBrewer)
+library(cowplot)
+library(kableExtra)
+sessionInfo()  
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r options}
+# Uses the computer cores available
+options(mc.cores = parallel::detectCores())
+options(scipen = 999)
+iter <- 20000
+chains <- 4
+```
+
+# Define priors (main and sensitivity analyses)
+
+```{r priors, echo=TRUE, cache=TRUE}
+d <- read.csv("estimates.slope2.csv")
+
+priors_new <- c(prior(normal(0,100), class = Intercept),
+             prior(normal(0,100), class = sd))
+
+priors_sens1 <- c(prior(normal(0,200), class = Intercept),
+             prior(normal(0,100), class = sd))
+
+priors_sens2 <- c(prior(uniform(-200,200), class = Intercept),
+             prior(normal(0,100), class = sd))
+
+priors_sens3 <- c(prior(normal(0,50), class = Intercept),
+             prior(normal(0,100), class = sd))
+
+priors_corr <- c(prior(normal(0,10), class = Intercept),
+             prior(normal(0,10), class = sd))
+
+priors_corr_sens1 <- c(prior(uniform(-3,3), class = Intercept),
+             prior(normal(0,10), class = sd))
+
+priors_corr_sens2 <- c(prior(uniform(-10,10), class = Intercept),
+             prior(normal(0,10), class = sd))
+
+```
+
+# Meta-analysis: semantic interference effect in first quantile
+
+```{r q1, echo=TRUE, cache=TRUE, warning=FALSE}
+
+fit_sem_quantile1 <- brm(quantile1|se(`SE_quantile1`) ~1 + (1|Experiment), 
+                         data=d,
+                         prior= priors_new,
+                         control=list(adapt_delta=.999, max_treedepth=12),
+                         warmup = 2000, 
+                         iter=iter, 
+                         save_all_pars = TRUE
+                         )
+
+fit_sem_quantile1
+
+tab_model(fit_sem_quantile1,
+        show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+       show.re.var=FALSE, show.obs=TRUE,
+      emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_sem_sens1_quantile1<- brm(quantile1| se(`SE_quantile1`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens1, 
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens1_quantile1
+
+###############
+fit_sem_sens2_quantile1<- brm(quantile1| se(`SE_quantile1`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens2,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens2_quantile1
+
+
+###############
+fit_sem_sens3_quantile1<- brm(quantile1| se(`SE_quantile1`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens3,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens3_quantile1
+
+
+fit_sem_quantile1_null <- brm(quantile1|se(`SE_quantile1`) ~ -1 + (1|Experiment), 
+                              data=d,
+                              prior= prior(normal(0,100), class = sd),
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+# run bridge sampler for all models
+fit_sem_quantile1_bs <- bridge_sampler(fit_sem_quantile1, silent = TRUE)
+fit_sem_quantile1_null_bs <- bridge_sampler(fit_sem_quantile1_null, silent = TRUE)
+fit_sem_sens1_quantile1_bs <- bridge_sampler(fit_sem_sens1_quantile1, silent = TRUE)
+fit_sem_sens2_quantile1_bs <- bridge_sampler(fit_sem_sens2_quantile1, silent = TRUE)
+fit_sem_sens3_quantile1_bs <- bridge_sampler(fit_sem_sens3_quantile1, silent = TRUE)
+
+# compute Bayes factors 
+bf_main_q1 <- round(bayes_factor(fit_sem_quantile1_bs, fit_sem_quantile1_null_bs)$bf,0)
+bf_sens1_q1 <- round(bayes_factor(fit_sem_sens1_quantile1_bs, fit_sem_quantile1_null_bs)$bf,0)
+bf_sens2_q1 <- round(bayes_factor(fit_sem_sens2_quantile1_bs, fit_sem_quantile1_null_bs)$bf,0)
+bf_sens3_q1 <- round(bayes_factor(fit_sem_sens3_quantile1_bs, fit_sem_quantile1_null_bs)$bf,0)
+
+estimates <- fit_sem_quantile1 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = "Quintile 1") %>%
+  mutate(BF10 = bf_main_q1)
+
+```
+
+
+## forest plot
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+f_q1 <- fit_sem_quantile1 %>%
+  spread_draws(b_Intercept, r_Experiment[Experiment,]) %>%
+  # add the grand mean to the group-specific deviations
+  mutate(mu = b_Intercept + r_Experiment) %>%
+  ungroup() %>%
+  mutate(Experiment = str_replace_all(Experiment, "[.]", " "))
+fp_q1 <- f_q1 %>%
+  # plot
+  ggplot(aes(x = mu, y = reorder(Experiment, mu))) +
+  geom_vline(xintercept = fixef(fit_sem_quantile1)[1, 1], color = "black", size = 1) +
+  geom_vline(xintercept = fixef(fit_sem_quantile1)[1, 3:4], color = "black", linetype = 2) +
+  stat_halfeye(.width = .95, size = 1/3, fill=transparent("white", trans.val=1)) +
+  labs(x = expression(italic("Estimate of the semantic interference effect in first quintile (ms)")),
+       y = NULL) +
+  #coord_cartesian(xlim = c(-50,80)) +
+  # xlim(-120, 120)+
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y  = element_text(hjust = 0,size = 6.5),
+        axis.text.x  = element_text(hjust = 0.5,size = 9),
+        axis.title.x =element_text(hjust = 0.5,size = 8),
+        panel.background = element_rect(fill="white",color ="grey75"))
+fp_q1
+# saved at 700x800px
+
+```
+
+## Posterior distribution
+
+```{r, echo=TRUE, warning=FALSE}
+
+color_scheme_set("gray")
+
+sp.sem_q1 <- stanplot(fit_sem_quantile1, pars = c("^b"), type="hist")+
+  theme_bw()+
+  facet_text(on = FALSE)+
+  #theme(text = element_text(size=10), axis.text.x =element_text(c("xx","yy")), legend.text=element_text(size=10))+
+  coord_cartesian(xlim = c(0,75), ylim = c(0,10000)) +
+  ylab("Density")+
+  xlab("")+
+  ggtitle("Quintile 1")
+
+
+```
+
+# Table for sensitivity analysis quantile 1
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+
+sens_q1 <- fit_sem_sens1_quantile1 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens1[1,1])) %>%
+  mutate(BF10 = bf_sens1_q1)
+
+sens2_q1 <- fit_sem_sens2_quantile1 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens2[1,1])) %>%
+  mutate(BF10 = bf_sens2_q1)
+
+sens3_q1 <- fit_sem_sens3_quantile1 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens3[1,1])) %>%
+  mutate(BF10 = bf_sens3_q1)
+
+sens_q1 <- rbind(sens_q1, sens2_q1, sens3_q1)
+
+sens_q1 <- sens_q1[,c(1:6,10:11)]
+sens_q1 <- sens_q1[,c(7,1:6,8)]
+
+sens_q1[2:7] <- lapply(sens_q1[2:7], function(x) round(x, 0))
+
+sens_q1$`95% CrI` <- paste0("[",sens_q1$b_Intercept.lower,",",sens_q1$b_Intercept.upper,"]")
+
+sens_q1 <- sens_q1 %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+sens_q1 <- sens_q1[,c(1:2,7,3:6)]
+
+sens_q1$`tau 95% CrI` <- paste0("[",sens_q1$sd_Experiment__Intercept.lower,",",sens_q1$sd_Experiment__Intercept.upper,"]")
+
+sens_q1 <- sens_q1 %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+sens_q1 <- sens_q1[,c(1:4,6,5)]
+
+colnames(sens_q1) <- c("Prior", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+sens_q1 %>%
+  kbl() %>%
+  kable_styling()
+```
+
+
+# Meta-analysis: semantic interference effect in second quantile
+
+```{r q2, echo=TRUE, cache=TRUE, warning=FALSE}
+
+fit_sem_quantile2 <- brm(quantile2|se(`SE_quantile2`) ~1 + (1|Experiment), 
+                         data=d,
+                         prior= priors_new,
+                         control=list(adapt_delta=.999, max_treedepth=12),
+                         warmup = 2000, 
+                         iter=iter, 
+                         save_all_pars = TRUE
+                         )
+
+fit_sem_quantile2
+
+
+tab_model(fit_sem_quantile2,
+        show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+       show.re.var=FALSE, show.obs=TRUE,
+      emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_sem_sens1_quantile2<- brm(quantile2| se(`SE_quantile2`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens1,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000, 
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens1_quantile2
+
+
+###############
+fit_sem_sens2_quantile2<- brm(quantile2| se(`SE_quantile2`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens2,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000, 
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens2_quantile2
+
+
+
+###############
+fit_sem_sens3_quantile2<- brm(quantile2| se(`SE_quantile2`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens3,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens3_quantile2
+
+###############
+fit_sem_quantile2_null <- brm(quantile2|se(`SE_quantile2`) ~ -1 + (1|Experiment), 
+                              data=d,
+                              prior= prior(normal(0,100), class = sd),
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000, 
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+
+fit_sem_quantile2_bs <- bridge_sampler(fit_sem_quantile2, silent = TRUE)
+fit_sem_quantile2_null_bs <- bridge_sampler(fit_sem_quantile2_null, silent = TRUE)
+fit_sem_sens1_quantile2_bs <- bridge_sampler(fit_sem_sens1_quantile2, silent = TRUE)
+fit_sem_sens2_quantile2_bs <- bridge_sampler(fit_sem_sens2_quantile2, silent = TRUE)
+fit_sem_sens3_quantile2_bs <- bridge_sampler(fit_sem_sens3_quantile2, silent = TRUE)
+
+bf_main_q2 <- round(bayes_factor(fit_sem_quantile2_bs, fit_sem_quantile2_null_bs)$bf,0)
+bf_sens1_q2 <- round(bayes_factor(fit_sem_sens1_quantile2_bs, fit_sem_quantile2_null_bs)$bf,0)
+bf_sens2_q2 <- round(bayes_factor(fit_sem_sens2_quantile2_bs, fit_sem_quantile2_null_bs)$bf,0)
+bf_sens3_q2 <- round(bayes_factor(fit_sem_sens3_quantile2_bs, fit_sem_quantile2_null_bs)$bf,0)
+
+estimates_q2 <- fit_sem_quantile2 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = "Quintile 2") %>%
+  mutate(BF10 = bf_main_q2)
+
+estimates <- rbind(estimates, estimates_q2)
+
+```
+
+## forest plot
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+f_q2 <- fit_sem_quantile2 %>%
+  spread_draws(b_Intercept, r_Experiment[Experiment,]) %>%
+  # add the grand mean to the group-specific deviations
+  mutate(mu = b_Intercept + r_Experiment) %>%
+  ungroup() %>%
+  mutate(Experiment = str_replace_all(Experiment, "[.]", " "))
+fp_q2 <- f_q2 %>%
+  # plot
+  ggplot(aes(x = mu, y = reorder(Experiment, mu))) +
+  geom_vline(xintercept = fixef(fit_sem_quantile2)[1, 1], color = "black", size = 1) +
+  geom_vline(xintercept = fixef(fit_sem_quantile2)[1, 3:4], color = "black", linetype = 2) +
+  stat_halfeye(.width = .95, size = 1/3, fill=transparent("white", trans.val=1)) +
+  labs(x = expression(italic("Estimate of the semantic interference effect in second quintile (ms)")),
+       y = NULL) +
+  #coord_cartesian(xlim = c(-50,80)) +
+  # xlim(-120, 120)+
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y  = element_text(hjust = 0,size = 6.5),
+        axis.text.x  = element_text(hjust = 0.5,size = 9),
+        axis.title.x =element_text(hjust = 0.5,size = 8),
+        panel.background = element_rect(fill="white",color ="grey75"))
+fp_q2
+# saved at 700x800px
+
+```
+
+## Posterior distribution
+
+```{r, echo=TRUE, warning=FALSE}
+
+color_scheme_set("gray")
+
+sp.sem_q2 <- stanplot(fit_sem_quantile2, pars = c("^b"), type="hist")+
+  theme_bw()+
+  facet_text(on = FALSE)+
+  #theme(text = element_text(size=10), axis.text.x =element_text(c("xx","yy")), legend.text=element_text(size=10))+
+  coord_cartesian(xlim = c(0,75), ylim = c(0,10000)) +
+  #ylab("Density")+
+  xlab("")+
+  ggtitle("Quintile 2")
+
+```
+
+# Table for sensitivity analysis quantile 2
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+
+sens_q2 <- fit_sem_sens1_quantile2 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens1[1,1])) %>%
+  mutate(BF10 = bf_sens1_q2)
+
+sens2_q2 <- fit_sem_sens2_quantile2 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens2[1,1])) %>%
+  mutate(BF10 = bf_sens2_q2)
+
+sens3_q2 <- fit_sem_sens3_quantile2 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens3[1,1])) %>%
+  mutate(BF10 = bf_sens3_q2)
+
+sens_q2 <- rbind(sens_q2, sens2_q2, sens3_q2)
+
+sens_q2 <- sens_q2[,c(1:6,10:11)]
+sens_q2 <- sens_q2[,c(7,1:6,8)]
+
+sens_q2[2:7] <- lapply(sens_q2[2:7], function(x) round(x, 0))
+
+sens_q2$`95% CrI` <- paste0("[",sens_q2$b_Intercept.lower,",",sens_q2$b_Intercept.upper,"]")
+
+sens_q2 <- sens_q2 %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+sens_q2 <- sens_q2[,c(1:2,7,3:6)]
+
+sens_q2$`tau 95% CrI` <- paste0("[",sens_q2$sd_Experiment__Intercept.lower,",",sens_q2$sd_Experiment__Intercept.upper,"]")
+
+sens_q2 <- sens_q2 %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+sens_q2 <- sens_q2[,c(1:4,6,5)]
+
+colnames(sens_q2) <- c("Prior", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+sens_q2 %>%
+  kbl() %>%
+  kable_styling()
+```
+
+# Meta-analysis: semantic interference effect in third quantile
+
+```{r q3, echo=TRUE, cache=TRUE, warning=FALSE}
+
+fit_sem_quantile3 <- brm(quantile3|se(`SE_quantile3`) ~1 + (1|Experiment), 
+                         data=d,
+                         prior= priors_new,
+                         control=list(adapt_delta=.999, max_treedepth=12),
+                         warmup = 2000,
+                         iter=iter, 
+                         save_all_pars = TRUE
+                         )
+
+fit_sem_quantile3
+
+
+tab_model(fit_sem_quantile3,
+        show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+       show.re.var=FALSE, show.obs=TRUE,
+      emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_sem_sens1_quantile3<- brm(quantile3| se(`SE_quantile3`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens1,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens1_quantile3
+
+
+###############
+fit_sem_sens2_quantile3<- brm(quantile3| se(`SE_quantile3`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens2,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens2_quantile3
+
+
+
+###############
+fit_sem_sens3_quantile3<- brm(quantile3| se(`SE_quantile3`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens3,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000, 
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens3_quantile3
+
+###############
+fit_sem_quantile3_null <- brm(quantile3|se(`SE_quantile3`) ~ -1 + (1|Experiment), 
+                              data=d,
+                              prior= prior(normal(0,100), class = sd),
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_quantile3_bs <- bridge_sampler(fit_sem_quantile3, silent = TRUE)
+fit_sem_quantile3_null_bs <- bridge_sampler(fit_sem_quantile3_null, silent = TRUE)
+fit_sem_sens1_quantile3_bs <- bridge_sampler(fit_sem_sens1_quantile3, silent = TRUE)
+fit_sem_sens2_quantile3_bs <- bridge_sampler(fit_sem_sens2_quantile3, silent = TRUE)
+fit_sem_sens3_quantile3_bs <- bridge_sampler(fit_sem_sens3_quantile3, silent = TRUE)
+
+bf_main_q3 <- round(bayes_factor(fit_sem_quantile3_bs, fit_sem_quantile3_null_bs)$bf,0)
+bf_sens1_q3 <- round(bayes_factor(fit_sem_sens1_quantile3_bs, fit_sem_quantile3_null_bs)$bf,0)
+bf_sens2_q3 <- round(bayes_factor(fit_sem_sens2_quantile3_bs, fit_sem_quantile3_null_bs)$bf,0)
+bf_sens3_q3 <- round(bayes_factor(fit_sem_sens3_quantile3_bs, fit_sem_quantile3_null_bs)$bf,0)
+
+
+estimates_q3 <- fit_sem_quantile3 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = "Quintile 3") %>%
+  mutate(BF10 = bf_main_q3)
+
+estimates <- rbind(estimates, estimates_q3)
+
+```
+
+## forest plot
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+f_q3 <- fit_sem_quantile3 %>%
+  spread_draws(b_Intercept, r_Experiment[Experiment,]) %>%
+  # add the grand mean to the group-specific deviations
+  mutate(mu = b_Intercept + r_Experiment) %>%
+  ungroup() %>%
+  mutate(Experiment = str_replace_all(Experiment, "[.]", " "))
+fp_q3 <- f_q3 %>%
+  # plot
+  ggplot(aes(x = mu, y = reorder(Experiment, mu))) +
+  geom_vline(xintercept = fixef(fit_sem_quantile3)[1, 1], color = "black", size = 1) +
+  geom_vline(xintercept = fixef(fit_sem_quantile3)[1, 3:4], color = "black", linetype = 2) +
+  stat_halfeye(.width = .95, size = 1/3, fill=transparent("white", trans.val=1)) +
+  labs(x = expression(italic("Estimate of the semantic interference effect in third quintile (ms)")),
+       y = NULL) +
+  #coord_cartesian(xlim = c(-50,80)) +
+  # xlim(-120, 120)+
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y  = element_text(hjust = 0,size = 6.5),
+        axis.text.x  = element_text(hjust = 0.5,size = 9),
+        axis.title.x =element_text(hjust = 0.5,size = 8),
+        panel.background = element_rect(fill="white",color ="grey75"))
+fp_q3
+# saved at 700x800px
+
+```
+
+## Posterior distribution
+
+```{r, echo=TRUE, warning=FALSE}
+
+color_scheme_set("gray")
+
+sp.sem_q3 <- stanplot(fit_sem_quantile3, pars = c("^b"), type="hist")+
+  theme_bw()+
+  facet_text(on = FALSE)+
+  #theme(text = element_text(size=10), axis.text.x =element_text(c("xx","yy")), legend.text=element_text(size=10))+
+  coord_cartesian(xlim = c(0,75), ylim = c(0,10000)) +
+  #ylab("Density")+
+  xlab("")+
+  ggtitle("Quintile 3")
+
+```
+
+# Table for sensitivity analysis quantile 3
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+
+sens_q3 <- fit_sem_sens1_quantile3 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens1[1,1])) %>%
+  mutate(BF10 = bf_sens1_q3)
+
+sens2_q3 <- fit_sem_sens2_quantile3 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens2[1,1])) %>%
+  mutate(BF10 = bf_sens2_q3)
+
+sens3_q3 <- fit_sem_sens3_quantile3 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens3[1,1])) %>%
+  mutate(BF10 = bf_sens3_q3)
+
+sens_q3 <- rbind(sens_q3, sens2_q3, sens3_q3)
+
+sens_q3 <- sens_q3[,c(1:6,10:11)]
+sens_q3 <- sens_q3[,c(7,1:6,8)]
+
+sens_q3[2:7] <- lapply(sens_q3[2:7], function(x) round(x, 0))
+
+sens_q3$`95% CrI` <- paste0("[",sens_q3$b_Intercept.lower,",",sens_q3$b_Intercept.upper,"]")
+
+sens_q3 <- sens_q3 %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+sens_q3 <- sens_q3[,c(1:2,7,3:6)]
+
+sens_q3$`tau 95% CrI` <- paste0("[",sens_q3$sd_Experiment__Intercept.lower,",",sens_q3$sd_Experiment__Intercept.upper,"]")
+
+sens_q3 <- sens_q3 %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+sens_q3 <- sens_q3[,c(1:4,6,5)]
+
+colnames(sens_q3) <- c("Prior", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+sens_q3 %>%
+  kbl() %>%
+  kable_styling()
+```
+
+# Meta-analysis: semantic interference effect in fourth quantile
+
+```{r q4, echo=TRUE, cache=TRUE, warning=FALSE}
+
+fit_sem_quantile4 <- brm(quantile4|se(`SE_quantile4`) ~1 + (1|Experiment), 
+                         data=d,
+                         prior= priors_new,
+                         control=list(adapt_delta=.999, max_treedepth=12),
+                         warmup = 2000,
+                         iter=iter, 
+                         save_all_pars = TRUE
+                         )
+
+fit_sem_quantile4
+
+
+tab_model(fit_sem_quantile4,
+        show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+       show.re.var=FALSE, show.obs=TRUE,
+      emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_sem_sens1_quantile4<- brm(quantile4| se(`SE_quantile4`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens1,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000, 
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens1_quantile4
+
+
+###############
+fit_sem_sens2_quantile4<- brm(quantile4| se(`SE_quantile4`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens2,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens2_quantile4
+
+
+
+###############
+fit_sem_sens3_quantile4<- brm(quantile4| se(`SE_quantile4`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens3,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens3_quantile4
+
+###############
+fit_sem_quantile4_null <- brm(quantile4|se(`SE_quantile4`) ~ -1 + (1|Experiment), 
+                              data=d,
+                              prior= prior(normal(0,100), class = sd),
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000, 
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_quantile4_bs <- bridge_sampler(fit_sem_quantile4, silent = TRUE)
+fit_sem_quantile4_null_bs <- bridge_sampler(fit_sem_quantile4_null, silent = TRUE)
+fit_sem_sens1_quantile4_bs <- bridge_sampler(fit_sem_sens1_quantile4, silent = TRUE)
+fit_sem_sens2_quantile4_bs <- bridge_sampler(fit_sem_sens2_quantile4, silent = TRUE)
+fit_sem_sens3_quantile4_bs <- bridge_sampler(fit_sem_sens3_quantile4, silent = TRUE)
+
+bf_main_q4 <- round(bayes_factor(fit_sem_quantile4_bs, fit_sem_quantile4_null_bs)$bf,0)
+bf_sens1_q4 <- round(bayes_factor(fit_sem_sens1_quantile4_bs, fit_sem_quantile4_null_bs)$bf,0)
+bf_sens2_q4 <- round(bayes_factor(fit_sem_sens2_quantile4_bs, fit_sem_quantile4_null_bs)$bf,0)
+bf_sens3_q4 <- round(bayes_factor(fit_sem_sens3_quantile4_bs, fit_sem_quantile4_null_bs)$bf,0)
+
+
+estimates_q4 <- fit_sem_quantile4 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = "Quintile 4") %>%
+  mutate(BF10 = bf_main_q4)
+
+estimates <- rbind(estimates, estimates_q4)
+
+```
+
+## forest plot
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+f_q4 <- fit_sem_quantile4 %>%
+  spread_draws(b_Intercept, r_Experiment[Experiment,]) %>%
+  # add the grand mean to the group-specific deviations
+  mutate(mu = b_Intercept + r_Experiment) %>%
+  ungroup() %>%
+  mutate(Experiment = str_replace_all(Experiment, "[.]", " "))
+fp_q4 <- f_q4 %>%
+  # plot
+  ggplot(aes(x = mu, y = reorder(Experiment, mu))) +
+  geom_vline(xintercept = fixef(fit_sem_quantile4)[1, 1], color = "black", size = 1) +
+  geom_vline(xintercept = fixef(fit_sem_quantile4)[1, 3:4], color = "black", linetype = 2) +
+  stat_halfeye(.width = .95, size = 1/3, fill=transparent("white", trans.val=1)) +
+  labs(x = expression(italic("Estimate of the semantic interference effect in fourth quintile (ms)")),
+       y = NULL) +
+  #coord_cartesian(xlim = c(-50,80)) +
+  # xlim(-120, 120)+
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y  = element_text(hjust = 0,size = 6.5),
+        axis.text.x  = element_text(hjust = 0.5,size = 9),
+        axis.title.x =element_text(hjust = 0.5,size = 8),
+        panel.background = element_rect(fill="white",color ="grey75"))
+fp_q4
+# saved at 700x800px
+
+```
+
+## Posterior distribution
+
+```{r, echo=TRUE, warning=FALSE}
+
+color_scheme_set("gray")
+
+sp.sem_q4 <- stanplot(fit_sem_quantile4, pars = c("^b"), type="hist")+
+  theme_bw()+
+  facet_text(on = FALSE)+
+  #theme(text = element_text(size=10), axis.text.x =element_text(c("xx","yy")), legend.text=element_text(size=10))+
+  coord_cartesian(xlim = c(0,75), ylim = c(0,10000)) +
+  #ylab("Density")+
+  xlab("")+
+  ggtitle("Quintile 4")
+
+```
+
+# Table for sensitivity analysis quantile 4
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+
+sens_q4 <- fit_sem_sens1_quantile4 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens1[1,1])) %>%
+  mutate(BF10 = bf_sens1_q4)
+
+sens2_q4 <- fit_sem_sens2_quantile4 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens2[1,1])) %>%
+  mutate(BF10 = bf_sens2_q4)
+
+sens3_q4 <- fit_sem_sens3_quantile4 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens3[1,1])) %>%
+  mutate(BF10 = bf_sens3_q4)
+
+sens_q4 <- rbind(sens_q4, sens2_q4, sens3_q4)
+
+sens_q4 <- sens_q4[,c(1:6,10:11)]
+sens_q4 <- sens_q4[,c(7,1:6,8)]
+
+sens_q4[2:7] <- lapply(sens_q4[2:7], function(x) round(x, 0))
+
+sens_q4$`95% CrI` <- paste0("[",sens_q4$b_Intercept.lower,",",sens_q4$b_Intercept.upper,"]")
+
+sens_q4 <- sens_q4 %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+sens_q4 <- sens_q4[,c(1:2,7,3:6)]
+
+sens_q4$`tau 95% CrI` <- paste0("[",sens_q4$sd_Experiment__Intercept.lower,",",sens_q4$sd_Experiment__Intercept.upper,"]")
+
+sens_q4 <- sens_q4 %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+sens_q4 <- sens_q4[,c(1:4,6,5)]
+
+colnames(sens_q4) <- c("Prior", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+sens_q4 %>%
+  kbl() %>%
+  kable_styling()
+```
+
+# Meta-analysis: semantic interference effect in fifth quantile
+
+```{r q5, echo=TRUE, cache=TRUE, warning=FALSE}
+
+fit_sem_quantile5 <- brm(quantile5|se(`SE_quantile5`) ~1 + (1|Experiment), 
+                         data=d,
+                         prior= priors_new,
+                         control=list(adapt_delta=.999, max_treedepth=12),
+                         warmup = 2000,
+                         iter=iter, 
+                         save_all_pars = TRUE
+                         )
+
+fit_sem_quantile5
+#save(fit_sem_quantile5, file="fit_sem_quantile5.Rdata")
+#load(file = "fit_sem.Rdata")
+
+tab_model(fit_sem_quantile5,
+        show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+       show.re.var=FALSE, show.obs=TRUE,
+      emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_sem_sens1_quantile5<- brm(quantile5| se(`SE_quantile5`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens1,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000,
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens1_quantile5
+#save(fit_sem_sens1_quantile5, file="fit_sem_sens1_quantile5.Rdata")
+
+###############
+fit_sem_sens2_quantile5<- brm(quantile5| se(`SE_quantile5`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens2,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000, 
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens2_quantile5
+#save(fit_sem_sens2_quantile4, file="fit_sem_sens2_quantile4.Rdata")
+
+
+###############
+fit_sem_sens3_quantile5<- brm(quantile5| se(`SE_quantile5`) ~1 + (1|Experiment), 
+                              data=d,
+                              prior= priors_sens3,
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000, 
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_sens3_quantile5
+#save(fit_sem_sens3_quantile4, file="fit_sem_sens3_quantile4.Rdata")
+
+fit_sem_quantile5_null <- brm(quantile5|se(`SE_quantile5`) ~ -1 + (1|Experiment), 
+                              data=d,
+                              prior= prior(normal(0,100), class = sd),
+                              control=list(adapt_delta=.999, max_treedepth=12),
+                              warmup = 2000, 
+                              iter=iter, 
+                              save_all_pars = TRUE
+                              )
+
+fit_sem_quantile5_bs <- bridge_sampler(fit_sem_quantile5, silent = TRUE)
+fit_sem_quantile5_null_bs <- bridge_sampler(fit_sem_quantile5_null, silent = TRUE)
+fit_sem_sens1_quantile5_bs <- bridge_sampler(fit_sem_sens1_quantile5, silent = TRUE)
+fit_sem_sens2_quantile5_bs <- bridge_sampler(fit_sem_sens2_quantile5, silent = TRUE)
+fit_sem_sens3_quantile5_bs <- bridge_sampler(fit_sem_sens3_quantile5, silent = TRUE)
+
+bf_main_q5 <- round(bayes_factor(fit_sem_quantile5_bs, fit_sem_quantile5_null_bs)$bf,0)
+bf_sens1_q5 <- round(bayes_factor(fit_sem_sens1_quantile5_bs, fit_sem_quantile5_null_bs)$bf,0)
+bf_sens2_q5 <- round(bayes_factor(fit_sem_sens2_quantile5_bs, fit_sem_quantile5_null_bs)$bf,0)
+bf_sens3_q5 <- round(bayes_factor(fit_sem_sens3_quantile5_bs, fit_sem_quantile5_null_bs)$bf,0)
+
+estimates_q5 <- fit_sem_quantile5 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = "Quintile 5") %>%
+  mutate(BF10 = bf_main_q5)
+
+estimates <- rbind(estimates, estimates_q5)
+
+```
+
+## forest plot
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+f_q5 <- fit_sem_quantile5 %>%
+  spread_draws(b_Intercept, r_Experiment[Experiment,]) %>%
+  # add the grand mean to the group-specific deviations
+  mutate(mu = b_Intercept + r_Experiment) %>%
+  ungroup() %>%
+  mutate(Experiment = str_replace_all(Experiment, "[.]", " "))
+fp_q5 <- f_q5 %>%
+  # plot
+  ggplot(aes(x = mu, y = reorder(Experiment, mu))) +
+  geom_vline(xintercept = fixef(fit_sem_quantile5)[1, 1], color = "black", size = 1) +
+  geom_vline(xintercept = fixef(fit_sem_quantile5)[1, 3:4], color = "black", linetype = 2) +
+  stat_halfeye(.width = .95, size = 1/3, fill=transparent("white", trans.val=1)) +
+  labs(x = expression(italic("Estimate of the semantic interference effect in fifth quintile (ms)")),
+       y = NULL) +
+  #coord_cartesian(xlim = c(-50,80)) +
+  # xlim(-120, 120)+
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y  = element_text(hjust = 0,size = 6.5),
+        axis.text.x  = element_text(hjust = 0.5,size = 9),
+        axis.title.x =element_text(hjust = 0.5,size = 8),
+        panel.background = element_rect(fill="white",color ="grey75"))
+fp_q5
+# saved at 700x800px
+
+```
+
+## Posterior distribution
+
+```{r, echo=TRUE, warning=FALSE}
+
+color_scheme_set("gray")
+
+sp.sem_q5 <- stanplot(fit_sem_quantile5, pars = c("^b"), type="hist")+
+  theme_bw()+
+  facet_text(on = FALSE)+
+  #theme(text = element_text(size=10), axis.text.x =element_text(c("xx","yy")), legend.text=element_text(size=10))+
+  coord_cartesian(xlim = c(0,75), ylim = c(0,10000)) +
+  #ylab("Density")+
+  xlab("")+
+  ggtitle("Quintile 5")
+
+
+```
+
+# Table for sensitivity analysis quantile 5
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+
+sens_q5 <- fit_sem_sens1_quantile5 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens1[1,1])) %>%
+  mutate(BF10 = bf_sens1_q5)
+
+sens2_q5 <- fit_sem_sens2_quantile5 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens2[1,1])) %>%
+  mutate(BF10 = bf_sens2_q5)
+
+sens3_q5 <- fit_sem_sens3_quantile5 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_sens3[1,1])) %>%
+  mutate(BF10 = bf_sens3_q5)
+
+sens_q5 <- rbind(sens_q5, sens2_q5, sens3_q5)
+
+sens_q5 <- sens_q5[,c(1:6,10:11)]
+sens_q5 <- sens_q5[,c(7,1:6,8)]
+
+sens_q5[2:7] <- lapply(sens_q5[2:7], function(x) round(x, 0))
+
+sens_q5$`95% CrI` <- paste0("[",sens_q5$b_Intercept.lower,",",sens_q5$b_Intercept.upper,"]")
+
+sens_q5 <- sens_q5 %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+sens_q5 <- sens_q5[,c(1:2,7,3:6)]
+
+sens_q5$`tau 95% CrI` <- paste0("[",sens_q5$sd_Experiment__Intercept.lower,",",sens_q5$sd_Experiment__Intercept.upper,"]")
+
+sens_q5 <- sens_q5 %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+sens_q5 <- sens_q5[,c(1:4,6,5)]
+
+colnames(sens_q5) <- c("Prior", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+sens_q5 %>%
+  kbl() %>%
+  kable_styling()
+```
+
+# Table and figure for paper for all quantiles
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+
+estimates <- estimates[,c(1:6,10:11)]
+estimates <- estimates[,c(7,1:6,8)]
+
+estimates[2:7] <- lapply(estimates[2:7], function(x) round(x, 0))
+
+estimates$`95% CrI` <- paste0("[",estimates$b_Intercept.lower,",",estimates$b_Intercept.upper,"]")
+
+estimates <- estimates %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+estimates <- estimates[,c(1:2,7,3:6)]
+
+estimates$`tau 95% CrI` <- paste0("[",estimates$sd_Experiment__Intercept.lower,",",estimates$sd_Experiment__Intercept.upper,"]")
+
+estimates <- estimates %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+estimates <- estimates[,c(1:4,6,5)]
+
+colnames(estimates) <- c("Meta-analysis", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+estimates %>%
+  kbl() %>%
+  kable_styling()
+
+sem_quantiles <- plot_grid(sp.sem_q1, sp.sem_q2, sp.sem_q3, sp.sem_q4, sp.sem_q5,
+                                    labels = c("A", "B", "C", "D", "E"), nrow = 1)
+sem_quantiles_plot <- ggdraw(add_sub(sem_quantiles, "Estimate (ms)", vpadding=grid::unit(0,"lines"),y=6, x=0.5, vjust=4.5))
+sem_quantiles_plot
+```
+
+# Increase in effect size over quantiles
+
+```{r increase, echo=TRUE, cache=TRUE, warning=FALSE}
+
+fit_increase <- brm(int_quant_sem|se(`SE_int_quant_sem`) ~1 + (1|Experiment), data=d,
+                    prior= priors_new,
+                    control=list(adapt_delta=.999, max_treedepth=12),
+                    warmup = 2000,
+                    iter=iter, 
+                    save_all_pars = TRUE
+                    )
+
+fit_increase
+
+tab_model(fit_increase,
+        show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+       show.re.var=FALSE, show.obs=TRUE,
+      emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_sens1_increase <- brm(int_quant_sem| se(`SE_int_quant_sem`) ~1 + (1|Experiment), 
+                          data=d,
+                          prior= priors_sens1,
+                          control=list(adapt_delta=.999, max_treedepth=12),
+                          warmup = 2000, 
+                          iter=iter, 
+                          save_all_pars = TRUE
+                          )
+
+fit_sens1_increase
+
+
+###############
+fit_sens2_increase <- brm(int_quant_sem| se(`SE_int_quant_sem`) ~1 + (1|Experiment), 
+                          data=d,
+                          prior= priors_sens2,
+                          control=list(adapt_delta=.999, max_treedepth=12),
+                          warmup = 2000, 
+                          iter=iter, 
+                          save_all_pars = TRUE
+                          )
+
+fit_sens2_increase
+
+
+###############
+fit_sens3_increase <- brm(int_quant_sem| se(`SE_int_quant_sem`) ~1 + (1|Experiment), 
+                          data=d,
+                          prior= priors_sens3,
+                          control=list(adapt_delta=.999, max_treedepth=12),
+                          warmup = 2000, 
+                          iter=iter, 
+                          save_all_pars = TRUE
+                          )
+
+fit_sens3_increase
+#save(fit_sem_sens3_quantile1, file="fit_sem_sens3_quantile1.Rdata")
+
+fit_increase_null <- brm(int_quant_sem|se(`SE_int_quant_sem`) ~ -1 + (1|Experiment), 
+                         data=d,
+                         prior= prior(normal(0,100), class = sd),
+                         control=list(adapt_delta=.999, max_treedepth=12),
+                         warmup = 2000, 
+                         iter=iter, 
+                         save_all_pars = TRUE
+                         )
+
+fit_increase_bs <- bridge_sampler(fit_increase, silent = TRUE)
+fit_increase_null_bs <- bridge_sampler(fit_increase_null, silent = TRUE)
+fit_sens1_increase_bs <- bridge_sampler(fit_sens1_increase, silent = TRUE)
+fit_sens2_increase_bs <- bridge_sampler(fit_sens2_increase, silent = TRUE)
+fit_sens3_increase_bs <- bridge_sampler(fit_sens3_increase, silent = TRUE)
+
+bayes_factor(fit_increase_bs, fit_increase_null_bs)
+bayes_factor(fit_sens1_increase_bs, fit_increase_null_bs)
+bayes_factor(fit_sens2_increase_bs, fit_increase_null_bs)
+bayes_factor(fit_sens3_increase_bs, fit_increase_null_bs)
+
+```
+
+# Correlation between mean semantic interference effect and slope of slowest delta segment: participant analysis
+
+```{r cor_slow_p, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+d$fisher_z <- DescTools::FisherZ(d$cor_est_slowest)
+fit_cor<- brm(fisher_z|se(sqrt(1 / (nb_participants - 3))) ~1 + (1|Experiment) , 
+              data=d, 
+              prior= priors_corr, 
+              control=list(adapt_delta=.999, max_treedepth=12),
+              warmup = 2000, 
+              iter=iter, 
+              save_all_pars = TRUE
+    )
+
+fit_cor
+
+# tab_model(fit_cor,
+#         show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+#        show.re.var=FALSE, show.obs=TRUE,
+#       emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_corr_sens1 <- brm(fisher_z|se(sqrt(1 / (nb_participants - 3))) ~1 + (1|Experiment), 
+                      data=d,
+                      prior= priors_corr_sens1,
+                      control=list(adapt_delta=.999, max_treedepth=12),
+                      warmup = 2000,
+                      iter=iter, 
+                      save_all_pars = TRUE
+    )
+
+fit_corr_sens1
+#save(fit_corr_sens1, file="fit_corr_sens1.Rdata")
+
+###############
+fit_corr_sens2 <- brm(fisher_z|se(sqrt(1 / (nb_participants - 3))) ~1 + (1|Experiment), 
+                      data=d,
+                      prior= priors_corr_sens2,
+                      control=list(adapt_delta=.999, max_treedepth=12),
+                      warmup = 2000,
+                      iter=iter, 
+                      save_all_pars = TRUE
+    )
+
+fit_corr_sens2
+#save(fit_corr_sens2, file="fit_corr_sens2.Rdata")
+
+
+# null model for Bayes factor test
+fit_cor_null <- brm(fisher_z|se(sqrt(1 / (nb_participants - 3))) ~ -1 + (1|Experiment), 
+                    data=d,
+                    prior= prior(normal(0,10), class = sd),
+                    control=list(adapt_delta=.999, max_treedepth=12),
+                    warmup = 2000, 
+                    iter=iter, 
+                    save_all_pars = TRUE
+    )
+fit_cor_null
+
+fit_cor_bs <- bridge_sampler(fit_cor, silent = TRUE)
+fit_cor_null_bs <- bridge_sampler(fit_cor_null, silent = TRUE)
+fit_corr_sens1_bs <- bridge_sampler(fit_corr_sens1, silent = TRUE)
+fit_corr_sens2_bs <- bridge_sampler(fit_corr_sens2, silent = TRUE)
+
+bf_main_cor_sl_par <- round(bayes_factor(fit_cor_bs, fit_cor_null_bs)$bf,0)
+bf_sens1_cor_sl_par <- round(bayes_factor(fit_corr_sens1_bs, fit_cor_null_bs)$bf,0)
+bf_sens2_cor_sl_par <- round(bayes_factor(fit_corr_sens2_bs, fit_cor_null_bs)$bf,0)
+
+# get_variables(fit_cor)
+
+cor_est_par <- fit_cor %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = "Correlation between slowest delta plot segment slope and semantic interference effect") %>%
+  mutate(BF10 = bf_main_cor_sl_par)
+
+```
+
+## forest plot
+
+```{r fp_1, echo=TRUE, cache=TRUE, warning=FALSE}
+f_corr <- fit_cor %>%
+  spread_draws(b_Intercept, r_Experiment[Experiment,]) %>%
+  # add the grand mean to the group-specific deviations
+  mutate(mu = b_Intercept + r_Experiment) %>%
+  ungroup() %>%
+  mutate(Experiment = str_replace_all(Experiment, "[.]", " "))
+fp_corr <- f_corr %>%
+  # plot
+  ggplot(aes(x = mu, y = reorder(Experiment, mu))) +
+  geom_vline(xintercept = fixef(fit_cor)[1, 1], color = "black", size = 1) +
+  geom_vline(xintercept = fixef(fit_cor)[1, 3:4], color = "black", linetype = 2) +
+  stat_halfeye(.width = .95, size = 1/3, fill=transparent("white", trans.val=1)) +
+  labs(x = expression(italic("Estimates of Fisher z-transformed correlations: slope of the slowest delta segment and semantic interference effect")),
+       y = NULL) +
+  # coord_cartesian(xlim = c(-50,80)) +
+  # xlim(-120, 120)+
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y  = element_text(hjust = 0,size = 6.5),
+        axis.text.x  = element_text(hjust = 0.5,size = 9),
+        axis.title.x =element_text(hjust = 0.5,size = 8),
+        panel.background = element_rect(fill="white",color ="grey75"))
+fp_corr
+# saved at 700x800px
+
+```
+
+## Posterior distribution
+
+```{r pos_1, echo=TRUE, warning=FALSE}
+
+color_scheme_set("gray")
+
+sp.corr <- stanplot(fit_cor, pars = c("^b"), type="hist")+
+  theme_bw()+
+  facet_text(on = FALSE)+
+  #theme(text = element_text(size=10), axis.text.x =element_text(c("xx","yy")), legend.text=element_text(size=10))+
+  coord_cartesian(xlim = c(0,.8), ylim = c(0,10000)) +
+  ylab("")+
+  xlab("")+
+  ggtitle("Correlation between the slope of the slowest\ndelta segment and the semantic interference effect")
+
+sp.corr
+
+```
+
+# Table for sensitivity analysis participant correlations slowest delta segment
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+
+sens_cor_par <- fit_corr_sens1 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_corr_sens1[1,1])) %>%
+  mutate(BF10 = bf_sens1_cor_sl_par)
+
+sens2_cor_par <- fit_corr_sens2 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_corr_sens2[1,1])) %>%
+  mutate(BF10 = bf_sens2_cor_sl_par)
+
+sens_cor_par <- rbind(sens_cor_par, sens2_cor_par)
+
+sens_cor_par <- sens_cor_par[,c(1:6,10:11)]
+sens_cor_par <- sens_cor_par[,c(7,1:6,8)]
+
+sens_cor_par[2:7] <- lapply(sens_cor_par[2:7], function(x) round(x, 2))
+
+sens_cor_par$`95% CrI` <- paste0("[",sens_cor_par$b_Intercept.lower,",",sens_cor_par$b_Intercept.upper,"]")
+
+sens_cor_par <- sens_cor_par %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+sens_cor_par <- sens_cor_par[,c(1:2,7,3:6)]
+
+sens_cor_par$`tau 95% CrI` <- paste0("[",sens_cor_par$sd_Experiment__Intercept.lower,",",sens_cor_par$sd_Experiment__Intercept.upper,"]")
+
+sens_cor_par <- sens_cor_par %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+sens_cor_par <- sens_cor_par[,c(1:4,6,5)]
+
+colnames(sens_cor_par) <- c("Prior", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+sens_cor_par %>%
+  kbl() %>%
+  kable_styling()
+
+```
+
+# Correlation between semantic interference effect and slope of the fastest delta segment: participant analysis
+
+```{r cor_fast_p, echo=TRUE, cache=TRUE, warning=FALSE}
+
+d$fisher_z_fast <- DescTools::FisherZ(d$cor_est_fastest)
+
+fit_cor_fastest<- brm(fisher_z_fast|se(sqrt(1 / (nb_participants - 3))) ~1 + (1|Experiment),
+                      data=d,
+                      prior= priors_corr,
+                      control=list(adapt_delta=.999, max_treedepth=12),
+                      warmup = 2000, 
+                      iter=iter, 
+                      save_all_pars = TRUE
+    )
+
+fit_cor_fastest
+
+# tab_model(fit_cor_fastest,
+#         show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+#        show.re.var=FALSE, show.obs=TRUE,
+#       emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_corr_fast_sens1 <- brm(fisher_z_fast|se(sqrt(1 / (nb_participants - 3))) ~1 + (1|Experiment), 
+                           data=d,
+                           prior= priors_corr_sens1,
+                           control=list(adapt_delta=.999, max_treedepth=12),
+                           warmup = 2000,
+                           iter=iter, 
+                           save_all_pars = TRUE
+    )
+
+fit_corr_fast_sens1
+
+
+###############
+fit_corr_fast_sens2 <- brm(fisher_z_fast|se(sqrt(1 / (nb_participants - 3))) ~1 + (1|Experiment), 
+                           data=d,
+                           prior= priors_corr_sens2,
+                           control=list(adapt_delta=.999, max_treedepth=12),
+                           warmup = 2000, 
+                           iter=iter, 
+                           save_all_pars = TRUE
+    )
+
+fit_corr_fast_sens2
+
+###############
+# fit null model for bf test
+fit_cor_fastest_null <- brm(fisher_z_fast|se(sqrt(1 / (nb_participants - 3))) ~ -1 + (1|Experiment), 
+                            data=d,
+                            prior= prior(normal(0,10), class = sd),
+                            control=list(adapt_delta=.999, max_treedepth=12),
+                            warmup = 2000, 
+                            iter=iter, 
+                            save_all_pars = TRUE
+    )
+
+fit_cor_fastest_bs <- bridge_sampler(fit_cor_fastest, silent = TRUE)
+fit_cor_fastest_null_bs <- bridge_sampler(fit_cor_fastest_null, silent = TRUE)
+fit_cor_fastest_sens1_bs <- bridge_sampler(fit_corr_fast_sens1, silent = TRUE)
+fit_cor_fastest_sens2_bs <- bridge_sampler(fit_corr_fast_sens2, silent = TRUE)
+
+bf_main_cor_fa_par <- round(bayes_factor(fit_cor_fastest_bs, fit_cor_fastest_null_bs)$bf,0)
+bf_sens1_cor_fa_par <- round(bayes_factor(fit_cor_fastest_sens1_bs, fit_cor_fastest_null_bs)$bf,0)
+bf_sens2_cor_fa_par <- round(bayes_factor(fit_cor_fastest_sens2_bs, fit_cor_fastest_null_bs)$bf,0)
+
+cor_est_par_fast <- fit_cor_fastest %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = "Correlation between fastest delta plot segment slope and semantic interference effect") %>%
+  mutate(BF10 = bf_main_cor_fa_par)
+
+cor_est_par <- rbind(cor_est_par, cor_est_par_fast)
+
+```
+
+## forest plot
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+f_corr_fastest <- fit_cor_fastest %>%
+  spread_draws(b_Intercept, r_Experiment[Experiment,]) %>%
+  # add the grand mean to the group-specific deviations
+  mutate(mu = b_Intercept + r_Experiment) %>%
+  ungroup() %>%
+  mutate(Experiment = str_replace_all(Experiment, "[.]", " "))
+fp_corr_fastest <- f_corr_fastest %>%
+  # plot
+  ggplot(aes(x = mu, y = reorder(Experiment, mu))) +
+  geom_vline(xintercept = fixef(fit_cor_fastest)[1, 1], color = "black", size = 1) +
+  geom_vline(xintercept = fixef(fit_cor_fastest)[1, 3:4], color = "black", linetype = 2) +
+  stat_halfeye(.width = .95, size = 1/3, fill=transparent("white", trans.val=1)) +
+  labs(x = expression(italic("Estimates of Fisher z-transformed correlations: slope of the fastest delta segment and semantic interference effect")),
+       y = NULL) +
+  # coord_cartesian(xlim = c(-50,80)) +
+  # xlim(-120, 120)+
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y  = element_text(hjust = 0,size = 6.5),
+        axis.text.x  = element_text(hjust = 0.5,size = 9),
+        axis.title.x =element_text(hjust = 0.5,size = 8),
+        panel.background = element_rect(fill="white",color ="grey75"))
+fp_corr_fastest
+# saved at 700x800px
+
+```
+
+## Posterior distribution
+
+```{r, echo=TRUE, warning=FALSE}
+
+color_scheme_set("gray")
+
+sp.corr_fastest <- stanplot(fit_cor_fastest, pars = c("^b"), type="hist")+
+  theme_bw()+
+  facet_text(on = FALSE)+
+  #theme(text = element_text(size=10), axis.text.x =element_text(c("xx","yy")), legend.text=element_text(size=10))+
+  coord_cartesian(xlim = c(0,.8), ylim = c(1,10000)) +
+  ylab("Density")+
+  xlab("")+
+  ggtitle("Correlation between the slope of the fastest\ndelta segment and the semantic interference effect")
+
+sp.corr_fastest
+
+```
+
+# Table and plot for paper
+
+```{r echo=TRUE, cache=TRUE, warning=FALSE}
+cor_est_par <- cor_est_par[,c(1:6,10:11)]
+cor_est_par <- cor_est_par[,c(7,1:6,8)]
+
+cor_est_par[2:7] <- lapply(cor_est_par[2:7], function(x) round(x, 2))
+
+cor_est_par$`95% CrI` <- paste0("[",cor_est_par$b_Intercept.lower,",",cor_est_par$b_Intercept.upper,"]")
+
+cor_est_par <- cor_est_par %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+cor_est_par <- cor_est_par[,c(1:2,7,3:6)]
+
+cor_est_par$`tau 95% CrI` <- paste0("[",cor_est_par$sd_Experiment__Intercept.lower,",",cor_est_par$sd_Experiment__Intercept.upper,"]")
+
+cor_est_par <- cor_est_par %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+cor_est_par <- cor_est_par[,c(1:4,6,5)]
+
+colnames(cor_est_par) <- c("Meta-analysis: by-participant analyses", "Estimate", "95% CrI", "tau", "95% CrI", "BF10")
+
+cor_est_par %>%
+  kbl() %>%
+  kable_styling()
+
+cor_plots <- cowplot::plot_grid(sp.corr_fastest, sp.corr, labels = c("A", "B"))
+
+cor_plots_final <- ggdraw(add_sub(cor_plots, "Estimate", vpadding=grid::unit(0,"lines"),y=6, x=0.5, vjust=4.5))
+cor_plots_final
+```
+
+# Table for sensitivity analysis participant correlations fastest delta segment
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+
+sens_cor_par_fast <- fit_corr_fast_sens1 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_corr_sens1[1,1])) %>%
+  mutate(BF10 = bf_sens1_cor_fa_par)
+
+sens2_cor_par_fast <- fit_corr_fast_sens2 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_corr_sens2[1,1])) %>%
+  mutate(BF10 = bf_sens2_cor_fa_par)
+
+sens_cor_par_fast <- rbind(sens_cor_par_fast, sens2_cor_par_fast)
+
+sens_cor_par_fast <- sens_cor_par_fast[,c(1:6,10:11)]
+sens_cor_par_fast <- sens_cor_par_fast[,c(7,1:6,8)]
+
+sens_cor_par_fast[2:7] <- lapply(sens_cor_par_fast[2:7], function(x) round(x, 2))
+
+sens_cor_par_fast$`95% CrI` <- paste0("[",sens_cor_par_fast$b_Intercept.lower,",",sens_cor_par_fast$b_Intercept.upper,"]")
+
+sens_cor_par_fast <- sens_cor_par_fast %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+sens_cor_par_fast <- sens_cor_par_fast[,c(1:2,7,3:6)]
+
+sens_cor_par_fast$`tau 95% CrI` <- paste0("[",sens_cor_par_fast$sd_Experiment__Intercept.lower,",",sens_cor_par_fast$sd_Experiment__Intercept.upper,"]")
+
+sens_cor_par_fast <- sens_cor_par_fast %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+sens_cor_par_fast <- sens_cor_par_fast[,c(1:4,6,5)]
+
+colnames(sens_cor_par_fast) <- c("Prior", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+sens_cor_par_fast %>%
+  kbl() %>%
+  kable_styling()
+
+```
+
+# Correlation with semantic interference effect and slowest delta segment: items analysis
+
+```{r cor_slow_i, echo=TRUE, cache=TRUE, warning=FALSE}
+
+d$fisher_z_item <- DescTools::FisherZ(d$cor_est_slowest_item)
+
+fit_cor_items <- brm(fisher_z_item|se(sqrt(1 / (num_items - 3))) ~1 + (1|Experiment), 
+                     data=d,
+                     prior= priors_corr,
+                     control=list(adapt_delta=.999, max_treedepth=12),
+                     warmup = 2000,
+                     iter=iter, 
+                     save_all_pars = TRUE
+                     )
+
+fit_cor_items
+# save(fit_sem_fastest, file="fit_sem_fastest.Rdata")
+# #load(file = "fit_sem.Rdata")
+#
+# tab_model(fit_cor,
+#         show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+#        show.re.var=FALSE, show.obs=TRUE,
+#       emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_corr_items_sens1 <- brm(fisher_z_item|se(sqrt(1 / (num_items - 3))) ~1 + (1|Experiment), 
+                            data=d,
+                            prior= priors_corr_sens1,
+                            control=list(adapt_delta=.999, max_treedepth=12),
+                            warmup = 2000,
+                            iter=iter, 
+                            save_all_pars = TRUE
+                            )
+
+fit_corr_items_sens1
+#save(fit_corr_sens1, file="fit_corr_sens1.Rdata")
+
+###############
+fit_corr_items_sens2 <- brm(fisher_z_item|se(sqrt(1 / (num_items - 3))) ~1 + (1|Experiment), 
+                            data=d,
+                            prior= priors_corr_sens2,
+                            control=list(adapt_delta=.999, max_treedepth=12),
+                            warmup = 2000,
+                            iter=iter, 
+                            save_all_pars = TRUE
+                            )
+
+fit_corr_items_sens2
+#save(fit_corr_sens2, file="fit_corr_sens2.Rdata")
+
+# null model for Bayes factor test
+fit_cor_items_null <- brm(fisher_z_item|se(sqrt(1 / (num_items - 3))) ~ -1 + (1|Experiment), 
+                          data=d,
+                          prior= prior(normal(0,10), class = sd),
+                          control=list(adapt_delta=.999, max_treedepth=12),
+                          warmup = 2000,
+                          iter=iter, 
+                          save_all_pars = TRUE
+                          )
+
+fit_cor_items_bs <- bridge_sampler(fit_cor_items, silent = TRUE)
+fit_cor_items_null_bs <- bridge_sampler(fit_cor_items_null, silent = TRUE)
+fit_corr_items_sens1_bs <- bridge_sampler(fit_corr_items_sens1, silent = TRUE)
+fit_corr_items_sens2_bs <- bridge_sampler(fit_corr_items_sens2, silent = TRUE)
+
+bf_main_cor_sl_it <- round(bayes_factor(fit_cor_items_bs, fit_cor_items_null_bs)$bf,0)
+bf_sens1_cor_sl_it <- round(bayes_factor(fit_corr_items_sens1_bs, fit_cor_items_null_bs)$bf,0)
+bf_sens2_cor_sl_it <- round(bayes_factor(fit_corr_items_sens2_bs, fit_cor_items_null_bs)$bf,0)
+
+cor_est_it <- fit_cor_items %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = "Correlation between slowest delta plot segment slope and semantic interference effect") %>%
+  mutate(BF10 = bf_main_cor_sl_it)
+
+```
+
+# Table for sensitivity analysis item correlations slowest delta segment
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+
+sens_cor_it <- fit_corr_items_sens1 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_corr_sens1[1,1])) %>%
+  mutate(BF10 = bf_sens1_cor_sl_it)
+
+sens2_cor_it <- fit_corr_items_sens2 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_corr_sens2[1,1])) %>%
+  mutate(BF10 = bf_sens2_cor_sl_it)
+
+sens_cor_it <- rbind(sens_cor_it, sens2_cor_it)
+
+sens_cor_it <- sens_cor_it[,c(1:6,10:11)]
+sens_cor_it <- sens_cor_it[,c(7,1:6,8)]
+
+sens_cor_it[2:7] <- lapply(sens_cor_it[2:7], function(x) round(x, 2))
+
+sens_cor_it$`95% CrI` <- paste0("[",sens_cor_it$b_Intercept.lower,",",sens_cor_it$b_Intercept.upper,"]")
+
+sens_cor_it <- sens_cor_it %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+sens_cor_it <- sens_cor_it[,c(1:2,7,3:6)]
+
+sens_cor_it$`tau 95% CrI` <- paste0("[",sens_cor_it$sd_Experiment__Intercept.lower,",",sens_cor_it$sd_Experiment__Intercept.upper,"]")
+
+sens_cor_it <- sens_cor_it %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+sens_cor_it <- sens_cor_it[,c(1:4,6,5)]
+
+colnames(sens_cor_it) <- c("Prior", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+sens_cor_it %>%
+  kbl() %>%
+  kable_styling()
+
+```
+
+# Items analyses: correlation between semantic interference effect and fastest delta segment
+
+```{r cor_fast_i, echo=TRUE, cache=TRUE, warning=FALSE}
+
+d$fisher_z_item_fast <- DescTools::FisherZ(d$cor_est_fastest_item)
+
+fit_cor_items_fast<- brm(fisher_z_item_fast|se(sqrt(1 / (num_items - 3))) ~1 + (1|Experiment), 
+                         data=d,
+                         prior= priors_corr,
+                         control=list(adapt_delta=.999, max_treedepth=12),
+                         warmup = 2000,
+                         iter=iter, 
+                         save_all_pars = TRUE
+                         )
+
+fit_cor_items_fast
+# save(fit_sem_fastest, file="fit_sem_fastest.Rdata")
+# #load(file = "fit_sem.Rdata")
+#
+# tab_model(fit_cor,
+#         show.se=FALSE, show.stat=TRUE, show.ci = 0.95,
+#        show.re.var=FALSE, show.obs=TRUE,
+#       emph.p = FALSE , show.icc = FALSE)
+
+###############
+fit_corr_items_fast_sens1 <- brm(fisher_z_item_fast|se(sqrt(1 / (num_items - 3))) ~1 + (1|Experiment), 
+                                 data=d,
+                                 prior= priors_corr_sens1,
+                                 control=list(adapt_delta=.999, max_treedepth=12),
+                                 warmup = 2000,
+                                 iter=iter, 
+                                 save_all_pars = TRUE
+                                 )
+
+fit_corr_items_fast_sens1
+#save(fit_corr_sens1, file="fit_corr_sens1.Rdata")
+
+###############
+fit_corr_items_fast_sens2 <- brm(fisher_z_item_fast|se(sqrt(1 / (num_items - 3))) ~1 + (1|Experiment), 
+                                 data=d,
+                                 prior= priors_corr_sens2,
+                                 control=list(adapt_delta=.999, max_treedepth=12),
+                                 warmup = 2000,
+                                 iter=iter, 
+                                 save_all_pars = TRUE
+                                 )
+
+fit_corr_items_fast_sens2
+#save(fit_corr_sens2, file="fit_corr_sens2.Rdata")
+
+fit_cor_items_fast_null <- brm(fisher_z_item_fast|se(sqrt(1 / (num_items - 3))) ~ -1 + (1|Experiment), 
+                               data=d,
+                               prior= prior(normal(0,10), class = sd),
+                               control=list(adapt_delta=.999, max_treedepth=12),
+                               warmup = 2000,
+                               iter=iter, 
+                               save_all_pars = TRUE
+                               )
+
+fit_cor_items_fast_bs <- bridge_sampler(fit_cor_items_fast, silent = TRUE)
+fit_cor_items_fast_null_bs <- bridge_sampler(fit_cor_items_fast_null, silent = TRUE)
+fit_corr_items_fast_sens1_bs <- bridge_sampler(fit_corr_items_fast_sens1, silent = TRUE)
+fit_corr_items_fast_sens2_bs <- bridge_sampler(fit_corr_items_fast_sens2, silent = TRUE)
+
+bf_main_cor_fa_it <- round(bayes_factor(fit_cor_items_fast_bs, fit_cor_items_fast_null_bs)$bf,0)
+bf_sens1_cor_fa_it <- round(bayes_factor(fit_corr_items_fast_sens1_bs, fit_cor_items_fast_null_bs)$bf,0)
+bf_sens2_cor_fa_it <- round(bayes_factor(fit_corr_items_fast_sens2_bs, fit_cor_items_fast_null_bs)$bf,0)
+
+cor_est_it_fast <- fit_cor_items_fast %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = "Correlation between fastest delta plot segment slope and semantic interference effect") %>%
+  mutate(BF10 = bf_main_cor_fa_it)
+
+cor_est_it <- rbind(cor_est_it, cor_est_it_fast)
+
+```
+
+
+## forest plot
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+f_cor_items <- fit_cor_items %>%
+  spread_draws(b_Intercept, r_Experiment[Experiment,]) %>%
+  # add the grand mean to the group-specific deviations
+  mutate(mu = b_Intercept + r_Experiment) %>%
+  ungroup() %>%
+  mutate(Experiment = str_replace_all(Experiment, "[.]", " "))
+fp_cor_items <- f_cor_items %>%
+  # plot
+  ggplot(aes(x = mu, y = reorder(Experiment, mu))) +
+  geom_vline(xintercept = fixef(fit_cor_items)[1, 1], color = "black", size = 1) +
+  geom_vline(xintercept = fixef(fit_cor_items)[1, 3:4], color = "black", linetype = 2) +
+  stat_halfeye(.width = .95, size = 1/3, fill=transparent("white", trans.val=1)) +
+  labs(x = expression(italic("Estimate: correlation between slope of slowest delta segment and semantic interference effect (items)")),
+       y = NULL) +
+  #coord_cartesian(xlim = c(0,100)) +
+  # xlim(-120, 120)+
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y  = element_text(hjust = 0,size = 6.5),
+        axis.text.x  = element_text(hjust = 0.5,size = 9),
+        axis.title.x =element_text(hjust = 0.5,size = 8),
+        panel.background = element_rect(fill="white",color ="grey75"))
+fp_cor_items
+
+f_cor_items_fast <- fit_cor_items_fast %>%
+  spread_draws(b_Intercept, r_Experiment[Experiment,]) %>%
+  # add the grand mean to the group-specific deviations
+  mutate(mu = b_Intercept + r_Experiment) %>%
+  ungroup() %>%
+  mutate(Experiment = str_replace_all(Experiment, "[.]", " "))
+fp_cor_items_fast <- f_cor_items_fast %>%
+  # plot
+  ggplot(aes(x = mu, y = reorder(Experiment, mu))) +
+  geom_vline(xintercept = fixef(fit_cor_items_fast)[1, 1], color = "black", size = 1) +
+  geom_vline(xintercept = fixef(fit_cor_items_fast)[1, 3:4], color = "black", linetype = 2) +
+  stat_halfeye(.width = .95, size = 1/3, fill=transparent("white", trans.val=1)) +
+  labs(x = expression(italic("Estimate: correlation between slope of fastest delta segment and semantic interference effect (items)")),
+       y = NULL) +
+  #coord_cartesian(xlim = c(0,100)) +
+  # xlim(-120, 120)+
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y  = element_text(hjust = 0,size = 6.5),
+        axis.text.x  = element_text(hjust = 0.5,size = 9),
+        axis.title.x =element_text(hjust = 0.5,size = 8),
+        panel.background = element_rect(fill="white",color ="grey75"))
+fp_cor_items_fast
+
+```
+
+## Posterior distribution
+
+```{r, echo=TRUE, warning=FALSE}
+
+color_scheme_set("gray")
+
+sp.corr_items <- stanplot(fit_cor_items, pars = c("^b"), type="hist")+
+  theme_bw()+
+  facet_text(on = FALSE)+
+  #theme(text = element_text(size=10), axis.text.x =element_text(c("xx","yy")), legend.text=element_text(size=10))+
+  coord_cartesian(xlim = c(0,.75), ylim = c(0,10000)) +
+  #ylab("Density")+
+  xlab("")+
+  ggtitle("Correlation between slowest delta plot slope\nand semantic interference (items)")
+
+sp.corr_items
+
+sp.corr_items_fast <- stanplot(fit_cor_items_fast, pars = c("^b"), type="hist")+
+  theme_bw()+
+  facet_text(on = FALSE)+
+  #theme(text = element_text(size=10), axis.text.x =element_text(c("xx","yy")), legend.text=element_text(size=10))+
+  coord_cartesian(xlim = c(0,.75), ylim = c(0,10000)) +
+  ylab("Density")+
+  xlab("")+
+  ggtitle("Correlation between fastest delta plot slope\nand semantic interference (items)")
+
+sp.corr_items_fast
+
+```
+
+# Table and plot for paper
+
+```{r echo=TRUE, cache=TRUE, warning=FALSE}
+cor_est_it <- cor_est_it[,c(1:6,10:11)]
+cor_est_it <- cor_est_it[,c(7,1:6,8)]
+
+cor_est_it[2:7] <- lapply(cor_est_it[2:7], function(x) round(x, 2))
+
+cor_est_it$`95% CrI` <- paste0("[",cor_est_it$b_Intercept.lower,",",cor_est_it$b_Intercept.upper,"]")
+
+cor_est_it <- cor_est_it %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+cor_est_it <- cor_est_it[,c(1:2,7,3:6)]
+
+cor_est_it$`tau 95% CrI` <- paste0("[",cor_est_it$sd_Experiment__Intercept.lower,",",cor_est_it$sd_Experiment__Intercept.upper,"]")
+
+cor_est_it <- cor_est_it %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+cor_est_it <- cor_est_it[,c(1:4,6,5)]
+
+colnames(cor_est_it) <- c("Meta-analysis: by-item analyses", "Estimate", "95% CrI", "tau", "95% CrI", "BF10")
+
+cor_est_it %>%
+  kbl() %>%
+  kable_styling()
+
+items_plots <- plot_grid(sp.corr_items_fast, sp.corr_items, labels = c("A","B"))
+
+items_plots_final <- ggdraw(add_sub(items_plots, "Estimate", vpadding=grid::unit(0,"lines"),y=6, x=0.5, vjust=4.5))
+items_plots_final
+
+```
+
+
+# Table for sensitivity analysis item correlations slowest delta segment
+
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+
+sens_cor_it_fast <- fit_corr_items_fast_sens1 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_corr_sens1[1,1])) %>%
+  mutate(BF10 = bf_sens1_cor_fa_it)
+
+sens2_cor_it_fast <- fit_corr_items_fast_sens2 %>%
+  spread_draws(b_Intercept, sd_Experiment__Intercept) %>%
+  mean_qi() %>%
+  mutate(model = paste(priors_corr_sens2[1,1])) %>%
+  mutate(BF10 = bf_sens2_cor_fa_it)
+
+sens_cor_it_fast <- rbind(sens_cor_it_fast, sens2_cor_it_fast)
+
+sens_cor_it_fast <- sens_cor_it_fast[,c(1:6,10:11)]
+sens_cor_it_fast <- sens_cor_it_fast[,c(7,1:6,8)]
+
+sens_cor_it_fast[2:7] <- lapply(sens_cor_it_fast[2:7], function(x) round(x, 2))
+
+sens_cor_it_fast$`95% CrI` <- paste0("[",sens_cor_it_fast$b_Intercept.lower,",",sens_cor_it_fast$b_Intercept.upper,"]")
+
+sens_cor_it_fast <- sens_cor_it_fast %>%
+  select(-c(b_Intercept.lower,b_Intercept.upper))
+sens_cor_it_fast <- sens_cor_it_fast[,c(1:2,7,3:6)]
+
+sens_cor_it_fast$`tau 95% CrI` <- paste0("[",sens_cor_it_fast$sd_Experiment__Intercept.lower,",",sens_cor_it_fast$sd_Experiment__Intercept.upper,"]")
+
+sens_cor_it_fast <- sens_cor_it_fast %>%
+  select(-c(sd_Experiment__Intercept.lower,sd_Experiment__Intercept.upper))
+sens_cor_it_fast <- sens_cor_it_fast[,c(1:4,6,5)]
+
+colnames(sens_cor_it_fast) <- c("Prior", "Estimate in ms", "95% CrI", "tau", "95% CrI", "BF10")
+
+sens_cor_it_fast %>%
+  kbl() %>%
+  kable_styling()
+
+```
